@@ -35,6 +35,38 @@
   ModAPI.require("player");
   ModAPI.require("settings");
 
+  // ============================================================
+  // EVENT BINDING — tolerant, because event names vary by build
+  // ============================================================
+  // ModAPI throws "This event does not exist!" on an unknown name, which
+  // would kill the whole mod. Try aliases, log what stuck, never throw.
+  function on(names, fn) {
+    const list = Array.isArray(names) ? names : [names];
+    for (const n of list) {
+      try {
+        ModAPI.addEventListener(n, fn);
+        console.log("[spidermod] bound event:", n);
+        return n;
+      } catch (e) { /* try next alias */ }
+    }
+    console.warn("[spidermod] NO event matched:", list.join(" / "));
+    return null;
+  }
+
+  // Run SpiderMod.listEvents() in the console to find the real names.
+  function listEvents() {
+    console.log("[spidermod] ModAPI keys:", Object.keys(ModAPI));
+    for (const k of Object.keys(ModAPI)) {
+      const v = ModAPI[k];
+      if (v && typeof v === "object") {
+        const sub = Object.keys(v);
+        if (sub.length && sub.length < 80) {
+          console.log("[spidermod] ModAPI." + k + ":", sub.join(", "));
+        }
+      }
+    }
+  }
+
   const state = {
     attached: false,
     anchor: null,
@@ -261,7 +293,7 @@
   // ============================================================
   // HUD
   // ============================================================
-  ModAPI.addEventListener("drawhud", () => {
+  on(["drawhud", "drawHUD", "hud", "renderhud", "drawoverlay"], () => {
     const w = ModAPI.getdisplayWidth();
     const h = ModAPI.getdisplayHeight();
 
@@ -289,7 +321,7 @@
   // ============================================================
   // EVENTS
   // ============================================================
-  ModAPI.addEventListener("key", (e) => {
+  on(["key", "keydown", "keypress"], (e) => {
     const k = e.key || e.code || e.keyCode;
     if (k === CONFIG.KEY_SWING) {
       e.preventDefault = true;
@@ -305,18 +337,19 @@
   });
 
   // constraint runs after vanilla motion so we override, not fight, gravity
-  ModAPI.addEventListener("postmotionupdate", () => {
+  on(["postmotionupdate", "postmotion", "update", "frame"], () => {
     tickSwing();
     tickCling();
   });
 
-  ModAPI.addEventListener("update", () => {
+  on(["update", "tick", "frame"], () => {
     if (state.attached && ModAPI.player && ModAPI.player.onGround) {
       // touching down ends the swing
       if (ModAPI.player.motionY <= 0) release();
     }
   });
 
-  window.SpiderMod = { state, CONFIG, debugWorld, findAnchor, isSolid };
+  window.SpiderMod = { state, CONFIG, debugWorld, findAnchor, isSolid, listEvents, on };
   console.log("[spidermod] loaded");
+  listEvents();
 })();
