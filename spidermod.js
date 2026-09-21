@@ -1,70 +1,92 @@
 // ============================================================
-// spidermod v1 — pendulum web-swinging + wall-crawl
-// Target: EaglercraftX 1.8.8 via EaglerForgeInjector
+// spidermod v2 — pendulum web-swinging + wall-crawl
+// Target: EaglercraftX 1.12.2 via EaglerForgeInjector
+// (v1 targeted 1.8.8 on the legacy radmanplays ModAPI — see git history)
 // ============================================================
 
-(function () {
+(function spidermod() {
   "use strict";
 
   const CONFIG = {
-    // --- keys (letters only; the `key` event ignores esc/chat keys) ---
+    // --- keys (KeyboardEvent.code; ignored while a GUI or chat is open) ---
     KEY_SWING: "KeyV",      // fire / release web
     KEY_CLING: "KeyC",      // toggle wall-crawl
-    KEY_DEBUG: "KeyP",      // dump world-object info to console
+    KEY_DEBUG: "KeyP",      // dump adapter state to the console
 
     // --- swing ---
     MAX_RANGE: 32,          // blocks; anchor search distance
-    RAY_STEP: 0.25,         // raycast granularity
     AIM_PITCH: [-35, -25, -15, -5],  // upward bias, degrees
     AIM_YAW: [0, -12, 12, -24, 24],  // fan width for auto-aim
-    REEL_SPEED: 0.035,      // rope shortening per tick -> the accelerating arc
+    MIN_ANCHOR_RISE: 2,     // anchor must be this far above the player
+    REEL_SPEED: 0.035,      // automatic rope shortening per tick -> accelerating arc
+    MANUAL_REEL: 0.09,      // jump reels in, sneak pays out, while swinging
     MIN_ROPE: 4,
+    MAX_ROPE: 40,
     DAMPING: 0.995,
     RELEASE_BOOST: 0.16,    // upward kick on release if already rising
-    SWING_INPUT: 0.02,      // tangential accel from movement input
+    SWING_INPUT: 0.02,      // tangential accel while holding forward
+    ATTACH_HOP: 0.42,       // kick off the ground when firing a web while standing
+    ATTACH_GRACE: 10,       // ticks before a ground touch can end the swing
+    ROPE_CORRECTION: 0.7,   // 0..1, how hard the rope snaps back onto the sphere
+    GRAVITY_GUESS: 0.08,    // vanilla player gravity, used to predict the next tick
 
     // --- wall-crawl ---
-    CLING_DIST: 0.35,       // how close to a wall counts as contact
-    CLIMB_SPEED: 0.14,
+    CLIMB_SPEED: 0.2,       // parity with ladders
     CLING_STICK: 0.0,       // motionY while clinging, idle
 
-    // set true if you confirm ModAPI.settings exposes live keybinding state
-    USE_LIVE_KEYBINDS: false,
+    // --- misc ---
+    HUD: true,
+    FORCE_DOM_KEYS: false,  // true = ignore GameSettings keybinds, read the browser only
   };
 
+  // ============================================================
+  // METADATA
+  // ============================================================
+  ModAPI.meta.title("SpiderMod");
+  ModAPI.meta.version("2.0.0");
+  ModAPI.meta.description(
+    "Web-swinging and wall-crawling for 1.12.2. V fires/releases a web (jump reels in, sneak pays out), C toggles wall-crawl, P dumps debug info."
+  );
+  ModAPI.meta.credits("kkacin");
+
   ModAPI.require("player");
-  ModAPI.require("settings");
+  ModAPI.require("world");
 
   // ============================================================
-  // EVENT BINDING — tolerant, because event names vary by build
+  // VERSION COMPAT
   // ============================================================
-  // ModAPI throws "This event does not exist!" on an unknown name, which
-  // would kill the whole mod. Try aliases, log what stuck, never throw.
-  function on(names, fn) {
-    const list = Array.isArray(names) ? names : [names];
-    for (const n of list) {
-      try {
-        ModAPI.addEventListener(n, fn);
-        console.log("[spidermod] bound event:", n);
-        return n;
-      } catch (e) { /* try next alias */ }
-    }
-    console.warn("[spidermod] NO event matched:", list.join(" / "));
-    return null;
+  // Everything this mod touches kept its name from 1.8 to 1.12 except:
+  //   * BlockPos moved to net.minecraft.util.math
+  //   * getMaterial() moved off Block onto IBlockState
+  //   * Minecraft.theWorld/thePlayer became world/player (the injector aliases
+  //     both, so ModAPI.player and ModAPI.world work on either version)
+  const IS_1_12 = !!ModAPI.reflect.getClassById("net.minecraft.util.math.BlockPos");
+  const BlockPosClass = ModAPI.reflect.getClassById(
+    IS_1_12 ? "net.minecraft.util.math.BlockPos" : "net.minecraft.util.BlockPos"
+  );
+  const newBlockPos = BlockPosClass
+    ? BlockPosClass.constructors.find((c) => c.length === 3)
+    : null;
+
+  const warned = new Set();
+  function warnOnce(tag, err) {
+    if (warned.has(tag)) return;
+    warned.add(tag);
+    console.warn("[spidermod] " + tag + " unavailable:", err);
   }
 
-  // Run SpiderMod.listEvents() in the console to find the real names.
-  function listEvents() {
-    console.log("[spidermod] ModAPI keys:", Object.keys(ModAPI));
-    for (const k of Object.keys(ModAPI)) {
-      const v = ModAPI[k];
-      if (v && typeof v === "object") {
-        const sub = Object.keys(v);
-        if (sub.length && sub.length < 80) {
-          console.log("[spidermod] ModAPI." + k + ":", sub.join(", "));
-        }
-      }
+  function corrective(obj) {
+    // TeaVM renames fields like isCollidedHorizontally -> isCollidedHorizontally0.
+    // Corrective proxies resolve those suffixes for us.
+    try {
+      return obj && typeof obj.getCorrective === "function" ? obj.getCorrective() : obj;
+    } catch (e) {
+      return obj;
     }
+  }
+
+  function chat(msg) {
+    try { ModAPI.displayToChat(msg); } catch (e) { console.log("[spidermod] " + msg); }
   }
 
   const state = {
@@ -72,61 +94,40 @@
     anchor: null,
     ropeLen: 0,
     clinging: false,
-    clingNormal: null,
+    clingContact: false,
+    graceTicks: 0,
     lastAnchorCandidate: null,
-    worldRef: null,
-    worldPathTried: null,
   };
 
   // ============================================================
-  // WORLD ACCESS  <-- the one thing you must verify first
+  // WORLD ACCESS
   // ============================================================
-  // The ModAPI docs don't expose a block lookup directly. `mcinstance` is the
-  // raw Minecraft object, so the world is reachable but the field name depends
-  // on whether your build is minified. Compile with `minifying: false` in
-  // build.gradle first, then press KEY_DEBUG in-game and read the console.
+  // ModAPI.world is a live WorldClient proxy, so block lookups are a plain
+  // getBlockState() call — no more digging through mcinstance for a field name.
+  const blockCache = new Map();
 
-  function resolveWorld() {
-    const mc = ModAPI.mcinstance;
-    if (!mc) return null;
-    const candidates = ["theWorld", "world", "field_71441_e"];
-    for (const name of candidates) {
-      if (mc[name]) {
-        state.worldPathTried = name;
-        return mc[name];
-      }
-    }
-    return null;
-  }
-
-  function debugWorld() {
-    const mc = ModAPI.mcinstance;
-    console.log("[spidermod] mcinstance keys:", mc ? Object.keys(mc) : "none");
-    const w = resolveWorld();
-    console.log("[spidermod] world via:", state.worldPathTried, w);
-    if (w) console.log("[spidermod] world keys:", Object.keys(w));
-    ModAPI.displayToChat({ msg: "spidermod: world info dumped to console" });
-  }
-
-  // ADAPTER: fill this in once you know the real call shape.
-  // In unobfuscated 1.8 it is roughly:
-  //   world.getBlockState(new BlockPos(x,y,z)).getBlock().getMaterial().isSolid()
-  function isSolid(x, y, z) {
-    if (!state.worldRef) state.worldRef = resolveWorld();
-    const w = state.worldRef;
-    if (!w) return false;
-
+  function blockStateAt(bx, by, bz) {
+    const key = bx + "," + by + "," + bz;
+    if (blockCache.has(key)) return blockCache.get(key);
+    let s = null;
     try {
-      const BlockPos = ModAPI.hooks._classMap["net.minecraft.util.BlockPos"];
-      const pos = new BlockPos(Math.floor(x), Math.floor(y), Math.floor(z));
-      const bs = w.getBlockState(pos);
-      const block = bs.getBlock();
-      return block.getMaterial().isSolid();
+      if (ModAPI.world && newBlockPos) s = ModAPI.world.getBlockState(newBlockPos(bx, by, bz));
     } catch (e) {
-      if (!isSolid._warned) {
-        console.warn("[spidermod] isSolid adapter needs wiring:", e);
-        isSolid._warned = true;
-      }
+      warnOnce("world.getBlockState", e);
+    }
+    blockCache.set(key, s);
+    return s;
+  }
+
+  function isSolid(x, y, z) {
+    const s = blockStateAt(Math.floor(x), Math.floor(y), Math.floor(z));
+    if (!s) return false;
+    try {
+      // 1.12: IBlockState.getMaterial(). 1.8: Block.getMaterial().
+      const mat = typeof s.getMaterial === "function" ? s.getMaterial() : s.getBlock().getMaterial();
+      return !!(mat && mat.isSolid());
+    } catch (e) {
+      warnOnce("blockState.getMaterial", e);
       return false;
     }
   }
@@ -151,29 +152,117 @@
     return { x: v.x / m, y: v.y / m, z: v.z / m };
   }
 
-  function eyePos() {
-    const p = ModAPI.player;
-    return { x: p.posX, y: p.posY + 1.62, z: p.posZ };
+  function eyePos(p) {
+    let eye = 1.62;
+    try {
+      if (typeof p.getEyeHeight === "function") eye = p.getEyeHeight();
+    } catch (e) {
+      warnOnce("player.getEyeHeight", e);
+    }
+    return { x: p.posX, y: p.posY + eye, z: p.posZ };
   }
 
   // ============================================================
-  // ANCHOR SEARCH — fan of rays, upward-biased, first hit wins
+  // INPUT
   // ============================================================
+  // The injector has no key event, so read the browser directly and fall back
+  // to it if GameSettings keybindings aren't legible on this build.
+  const keysDown = new Set();
+
+  function guiOpen() {
+    try {
+      return !!corrective(ModAPI.mc).currentScreen;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function keyBind(name) {
+    if (CONFIG.FORCE_DOM_KEYS) return null;
+    try {
+      const kb = ModAPI.settings && ModAPI.settings[name];
+      return kb && typeof kb.pressed !== "undefined" ? kb : null;
+    } catch (e) {
+      warnOnce("settings." + name, e);
+      return null;
+    }
+  }
+
+  function held(bindName, domCode) {
+    const kb = keyBind(bindName);
+    if (kb) {
+      try { return !!kb.pressed; } catch (e) { warnOnce("keybind.pressed", e); }
+    }
+    return keysDown.has(domCode);
+  }
+
+  const heldJump = () => held("keyBindJump", "Space");
+  const heldSneak = () => held("keyBindSneak", "ShiftLeft");
+  const heldForward = () => held("keyBindForward", "KeyW");
+
+  window.addEventListener("keydown", (e) => {
+    keysDown.add(e.code);
+    // Held keys repeat ~30x/second; without this, holding V flaps the web.
+    if (e.repeat) return;
+    if (guiOpen() || !ModAPI.player) return;
+    const p = corrective(ModAPI.player);
+    if (e.code !== CONFIG.KEY_SWING && e.code !== CONFIG.KEY_CLING && e.code !== CONFIG.KEY_DEBUG) return;
+
+    // these three belong to the mod, so don't let the game act on them too
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (e.code === CONFIG.KEY_SWING) {
+      state.attached ? release(p) : attach(p);
+    } else if (e.code === CONFIG.KEY_CLING) {
+      state.clinging = !state.clinging;
+      chat("wall-crawl " + (state.clinging ? "on" : "off"));
+    } else {
+      debugDump();
+    }
+  }, true);
+
+  window.addEventListener("keyup", (e) => keysDown.delete(e.code), true);
+  window.addEventListener("blur", () => keysDown.clear());
+
+  // ============================================================
+  // ANCHOR SEARCH — fan of rays, upward-biased, nearest hit wins
+  // ============================================================
+  // Voxel traversal (one block query per block crossed) instead of v1's fixed
+  // 0.25-block sampling, so a 32-block ray costs ~32 lookups, not 128.
   function castRay(origin, dir, maxDist) {
-    for (let d = 1; d < maxDist; d += CONFIG.RAY_STEP) {
-      const x = origin.x + dir.x * d;
-      const y = origin.y + dir.y * d;
-      const z = origin.z + dir.z * d;
-      if (isSolid(x, y, z)) {
-        return { x: Math.floor(x) + 0.5, y: Math.floor(y) + 0.5, z: Math.floor(z) + 0.5, dist: d };
+    let bx = Math.floor(origin.x), by = Math.floor(origin.y), bz = Math.floor(origin.z);
+    const stepX = dir.x > 0 ? 1 : -1;
+    const stepY = dir.y > 0 ? 1 : -1;
+    const stepZ = dir.z > 0 ? 1 : -1;
+
+    const invX = dir.x !== 0 ? Math.abs(1 / dir.x) : Infinity;
+    const invY = dir.y !== 0 ? Math.abs(1 / dir.y) : Infinity;
+    const invZ = dir.z !== 0 ? Math.abs(1 / dir.z) : Infinity;
+
+    // distance along the ray to the first grid plane in each axis
+    let tX = dir.x !== 0 ? ((dir.x > 0 ? bx + 1 - origin.x : origin.x - bx) * invX) : Infinity;
+    let tY = dir.y !== 0 ? ((dir.y > 0 ? by + 1 - origin.y : origin.y - by) * invY) : Infinity;
+    let tZ = dir.z !== 0 ? ((dir.z > 0 ? bz + 1 - origin.z : origin.z - bz) * invZ) : Infinity;
+
+    let t = 0;
+    while (t <= maxDist) {
+      if (t > 1 && isSolid(bx, by, bz)) {
+        return { x: bx + 0.5, y: by + 0.5, z: bz + 0.5, dist: t };
+      }
+      if (tX <= tY && tX <= tZ) {
+        bx += stepX; t = tX; tX += invX;
+      } else if (tY <= tZ) {
+        by += stepY; t = tY; tY += invY;
+      } else {
+        bz += stepZ; t = tZ; tZ += invZ;
       }
     }
     return null;
   }
 
-  function findAnchor() {
-    const p = ModAPI.player;
-    const origin = eyePos();
+  function findAnchor(p) {
+    const origin = eyePos(p);
     let best = null;
 
     for (const dp of CONFIG.AIM_PITCH) {
@@ -181,175 +270,213 @@
         const dir = lookVec(p.rotationYaw + dy, p.rotationPitch + dp);
         const hit = castRay(origin, dir, CONFIG.MAX_RANGE);
         // prefer anchors above the player — that's what makes arcs feel right
-        if (hit && hit.y > p.posY + 2) {
+        if (hit && hit.y > p.posY + CONFIG.MIN_ANCHOR_RISE) {
           if (!best || hit.dist < best.dist) best = hit;
         }
       }
     }
+    state.lastAnchorCandidate = best;
     return best;
   }
 
   // ============================================================
   // SWING
   // ============================================================
-  function attach() {
-    const a = findAnchor();
+  function attach(p) {
+    const a = findAnchor(p);
     if (!a) {
-      ModAPI.displayToChat({ msg: "\u00a77no anchor in range" });
+      chat("§7no anchor in range");
       return;
     }
-    const p = ModAPI.player;
+    const len = mag(sub(a, { x: p.posX, y: p.posY, z: p.posZ }));
     state.anchor = a;
-    state.ropeLen = mag(sub(a, { x: p.posX, y: p.posY, z: p.posZ }));
+    state.ropeLen = Math.min(Math.max(len, CONFIG.MIN_ROPE), CONFIG.MAX_ROPE);
     state.attached = true;
+    // Swinging off from a standing start: hop, and hold off the landing check
+    // for a few ticks, or the ground test below would cut the web instantly.
+    state.graceTicks = CONFIG.ATTACH_GRACE;
+    if (p.onGround && p.motionY <= 0) p.motionY = CONFIG.ATTACH_HOP;
   }
 
-  function release() {
+  function release(p) {
     if (!state.attached) return;
-    const p = ModAPI.player;
-    if (p.motionY > 0) p.motionY += CONFIG.RELEASE_BOOST;
-    p.reload();
+    if (p && p.motionY > 0) p.motionY += CONFIG.RELEASE_BOOST;
     state.attached = false;
     state.anchor = null;
+    state.graceTicks = 0;
   }
 
-  function tickSwing() {
+  function setPosition(p, x, y, z) {
+    // setPosition() also moves the bounding box; writing posX/Y/Z alone leaves
+    // collision a tick behind and the player clips into the wall they swing past.
+    try {
+      if (typeof p.setPosition === "function") {
+        p.setPosition(x, y, z);
+        return;
+      }
+    } catch (e) {
+      warnOnce("player.setPosition", e);
+    }
+    p.posX = x; p.posY = y; p.posZ = z;
+  }
+
+  function tickSwing(p) {
     if (!state.attached || !state.anchor) return;
-    const p = ModAPI.player;
     const pos = { x: p.posX, y: p.posY, z: p.posZ };
-    const d = sub(state.anchor, pos);          // player -> anchor
-    const len = mag(d);
+    const toAnchor = sub(state.anchor, pos);
 
-    if (len > CONFIG.MAX_RANGE * 1.5) { release(); return; }
+    if (mag(toAnchor) > CONFIG.MAX_RANGE * 1.5) { release(p); return; }
 
-    // reel in while below the anchor: this is what accelerates the arc
-    if (state.ropeLen > CONFIG.MIN_ROPE && state.anchor.y > p.posY + 1) {
+    // rope length: jump reels in, sneak pays out, otherwise reel in slowly
+    // while below the anchor — that slow reel is what accelerates the arc
+    if (heldJump()) {
+      state.ropeLen -= CONFIG.MANUAL_REEL;
+    } else if (heldSneak()) {
+      state.ropeLen += CONFIG.MANUAL_REEL;
+    } else if (state.anchor.y > p.posY + 1) {
       state.ropeLen -= CONFIG.REEL_SPEED;
     }
+    state.ropeLen = Math.min(Math.max(state.ropeLen, CONFIG.MIN_ROPE), CONFIG.MAX_ROPE);
+
+    const n = norm(toAnchor);
+
+    // pump the swing: push along the tangent, in the direction we're looking
+    if (heldForward()) {
+      const look = lookVec(p.rotationYaw, p.rotationPitch);
+      const tangent = norm(sub(look, { x: n.x * dot(look, n), y: n.y * dot(look, n), z: n.z * dot(look, n) }));
+      p.motionX += tangent.x * CONFIG.SWING_INPUT;
+      p.motionY += tangent.y * CONFIG.SWING_INPUT;
+      p.motionZ += tangent.z * CONFIG.SWING_INPUT;
+    }
+
+    // The `update` event fires before vanilla movement, so constrain against
+    // where this tick is about to put us rather than where we already are.
+    const pred = {
+      x: pos.x + p.motionX,
+      y: pos.y + p.motionY - CONFIG.GRAVITY_GUESS,
+      z: pos.z + p.motionZ,
+    };
+    const d = sub(state.anchor, pred);
+    const len = mag(d);
 
     if (len > state.ropeLen) {
-      const n = norm(d);
-      const radial = dot({ x: p.motionX, y: p.motionY, z: p.motionZ }, n);
+      const rn = norm(d);
+      const radial = dot({ x: p.motionX, y: p.motionY, z: p.motionZ }, rn);
 
       // strip the outward velocity component -> pure pendulum
       if (radial < 0) {
-        p.motionX -= n.x * radial;
-        p.motionY -= n.y * radial;
-        p.motionZ -= n.z * radial;
+        p.motionX -= rn.x * radial;
+        p.motionY -= rn.y * radial;
+        p.motionZ -= rn.z * radial;
       }
 
-      // snap position back onto the sphere
-      const over = len - state.ropeLen;
-      p.posX += n.x * over;
-      p.posY += n.y * over;
-      p.posZ += n.z * over;
+      // and pull what's left of the stretch back onto the sphere
+      const over = (len - state.ropeLen) * CONFIG.ROPE_CORRECTION;
+      setPosition(p, pos.x + rn.x * over, pos.y + rn.y * over, pos.z + rn.z * over);
     }
 
     p.motionX *= CONFIG.DAMPING;
     p.motionZ *= CONFIG.DAMPING;
     p.fallDistance = 0;
-    p.reload();
   }
 
   // ============================================================
   // WALL-CRAWL
   // ============================================================
-  function wallNormal() {
-    const p = ModAPI.player;
-    const y = p.posY + 1;
-    const dirs = [
-      { x: 1, z: 0 }, { x: -1, z: 0 },
-      { x: 0, z: 1 }, { x: 0, z: -1 },
-    ];
-    for (const dir of dirs) {
-      const cx = p.posX + dir.x * (0.3 + CONFIG.CLING_DIST);
-      const cz = p.posZ + dir.z * (0.3 + CONFIG.CLING_DIST);
-      if (isSolid(cx, y, cz)) return dir;
-    }
-    return null;
-  }
-
-  function tickCling() {
+  // v1 probed the four horizontal neighbours for a solid block. The engine
+  // already tracks this, and isCollidedHorizontally handles slabs, stairs and
+  // fences correctly for free.
+  function tickCling(p) {
     if (!state.clinging || state.attached) return;
-    const p = ModAPI.player;
-    const n = wallNormal();
-    if (!n) { state.clingNormal = null; return; }
-    state.clingNormal = n;
+    state.clingContact = !!p.isCollidedHorizontally;
+    if (!state.clingContact) return;
 
-    // cancel gravity, hold to the wall
-    p.motionY = CONFIG.CLING_STICK;
-    p.fallDistance = 0;
-
-    if (CONFIG.USE_LIVE_KEYBINDS && ModAPI.settings) {
-      const s = ModAPI.settings;
-      if (s.keyBindJump && s.keyBindJump.pressed) p.motionY = CONFIG.CLIMB_SPEED;
-      if (s.keyBindSneak && s.keyBindSneak.pressed) p.motionY = -CONFIG.CLIMB_SPEED;
-      if (s.keyBindForward && s.keyBindForward.pressed) p.motionY = CONFIG.CLIMB_SPEED;
+    if (heldJump() || heldForward()) {
+      p.motionY = CONFIG.CLIMB_SPEED;
+    } else if (heldSneak()) {
+      p.motionY = -CONFIG.CLIMB_SPEED;
+    } else {
+      p.motionY = CONFIG.CLING_STICK;
     }
-
-    p.reload();
+    p.fallDistance = 0;
   }
 
   // ============================================================
-  // HUD
+  // HUD — a DOM overlay; the injector exposes no font renderer
   // ============================================================
-  on(["drawhud", "drawHUD", "hud", "renderhud", "drawoverlay"], () => {
-    const w = ModAPI.getdisplayWidth();
-    const h = ModAPI.getdisplayHeight();
+  const hud = CONFIG.HUD ? buildHud() : null;
 
-    if (state.attached) {
-      ModAPI.drawStringWithShadow({
-        msg: "WEB  " + state.ropeLen.toFixed(1) + "m",
-        x: 6, y: 6, color: 0xFFFF5555,
-      });
-      // crude web line: a marker toward the anchor until 3D rendering is wired
-      ModAPI.drawRect({
-        left: w / 2 - 1, top: h / 2 - 10,
-        right: w / 2 + 1, bottom: h / 2 - 2,
-        color: 0xFFFFFFFF,
-      });
-    }
+  function buildHud() {
+    const el = document.createElement("div");
+    el.style.cssText = [
+      "position:fixed", "top:6px", "left:8px", "z-index:200",
+      "pointer-events:none", "font:12px monospace", "line-height:1.4",
+      "text-shadow:1px 1px 0 #000", "white-space:pre", "display:none",
+    ].join(";");
+    document.documentElement.appendChild(el);
+    return el;
+  }
 
-    if (state.clinging) {
-      ModAPI.drawStringWithShadow({
-        msg: state.clingNormal ? "CLING" : "cling (no wall)",
-        x: 6, y: 18, color: 0xFF55AAFF,
-      });
-    }
-  });
+  function updateHud() {
+    if (!hud) return;
+    const lines = [];
+    if (state.attached) lines.push("‹WEB› " + state.ropeLen.toFixed(1) + "m");
+    if (state.clinging) lines.push(state.clingContact ? "CLING" : "cling (no wall)");
+    const text = lines.join("\n");
+    if (text === hud._text) return;
+    hud._text = text;
+    hud.textContent = text;
+    hud.style.color = state.attached ? "#ff5555" : "#55aaff";
+    hud.style.display = text ? "block" : "none";
+  }
 
   // ============================================================
-  // EVENTS
+  // DEBUG
   // ============================================================
-  on(["key", "keydown", "keypress"], (e) => {
-    const k = e.key || e.code || e.keyCode;
-    if (k === CONFIG.KEY_SWING) {
-      e.preventDefault = true;
-      state.attached ? release() : attach();
-    } else if (k === CONFIG.KEY_CLING) {
-      e.preventDefault = true;
-      state.clinging = !state.clinging;
-      ModAPI.displayToChat({ msg: "wall-crawl " + (state.clinging ? "on" : "off") });
-    } else if (k === CONFIG.KEY_DEBUG) {
-      e.preventDefault = true;
-      debugWorld();
-    }
-  });
+  function debugDump() {
+    const p = ModAPI.player ? corrective(ModAPI.player) : null;
+    const info = {
+      modapiVersion: ModAPI.version,
+      detected: IS_1_12 ? "1.12" : "1.8",
+      is_1_12_flag: ModAPI.is_1_12,
+      blockPosCtor: !!newBlockPos,
+      world: !!ModAPI.world,
+      blockBelowPlayer: p ? String(blockStateAt(Math.floor(p.posX), Math.floor(p.posY) - 1, Math.floor(p.posZ))) : null,
+      solidBelowPlayer: p ? isSolid(p.posX, p.posY - 1, p.posZ) : null,
+      keybindsLegible: !!keyBind("keyBindJump"),
+      setPosition: p ? typeof p.setPosition : null,
+      collidedHorizontally: p ? p.isCollidedHorizontally : null,
+      state: state,
+    };
+    console.log("[spidermod] debug", info);
+    chat("spidermod: " + (IS_1_12 ? "1.12" : "1.8") + " adapter, world=" + (!!ModAPI.world) +
+      ", blocks=" + (p ? isSolid(p.posX, p.posY - 1, p.posZ) : "?") +
+      ", keybinds=" + (!!keyBind("keyBindJump")) + " (details in console)");
+  }
 
-  // constraint runs after vanilla motion so we override, not fight, gravity
-  on(["postmotionupdate", "postmotion", "update", "frame"], () => {
-    tickSwing();
-    tickCling();
-  });
-
-  on(["update", "tick", "frame"], () => {
-    if (state.attached && ModAPI.player && ModAPI.player.onGround) {
+  // ============================================================
+  // TICK
+  // ============================================================
+  ModAPI.addEventListener("update", () => {
+    blockCache.clear();
+    if (!ModAPI.player) return;
+    const p = corrective(ModAPI.player);
+    try {
+      if (state.graceTicks > 0) state.graceTicks--;
+      tickSwing(p);
+      tickCling(p);
       // touching down ends the swing
-      if (ModAPI.player.motionY <= 0) release();
+      if (state.attached && !state.graceTicks && p.onGround && p.motionY <= 0) release(p);
+    } catch (e) {
+      warnOnce("tick", e);
     }
   });
 
-  window.SpiderMod = { state, CONFIG, debugWorld, findAnchor, isSolid, listEvents, on };
-  console.log("[spidermod] loaded");
-  listEvents();
+  ModAPI.addEventListener("frame", updateHud);
+
+  window.SpiderMod = {
+    state, CONFIG, isSolid, findAnchor, castRay, blockStateAt, debugDump,
+    is1_12: IS_1_12,
+  };
+  console.log("[spidermod] loaded (" + (IS_1_12 ? "1.12" : "1.8") + " adapter)");
 })();
