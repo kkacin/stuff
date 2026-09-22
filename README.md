@@ -1,13 +1,14 @@
 # stuff
 
-Two EaglerForge mods for **EaglercraftX 1.12.2**:
+Three EaglerForge mods for **EaglercraftX 1.12.2**:
 
 | File | What it does |
 | --- | --- |
 | [`spidermod.js`](spidermod.js) | Pendulum web-swinging and wall-crawling. |
 | [`smartzombies.js`](smartzombies.js) | Zombie AI overhaul — flanking, horde comms, target leading, dodging. |
+| [`lavaskeletons.js`](lavaskeletons.js) | Skeletons gargle and vomit arcing globs of lava at you. |
 
-Both are plain JavaScript mods for [EaglerForgeInjector](https://github.com/eaglerforge/EaglerForgeInjector).
+All three are plain JavaScript mods for [EaglerForgeInjector](https://github.com/eaglerforge/EaglerForgeInjector).
 Run an unminified, unobfuscated EaglercraftX 1.12.2 offline download through the
 injector, then load the `.js` files from the **Mods** button in Options.
 
@@ -129,6 +130,62 @@ world forever.
 
 ---
 
+## lavaskeletons
+
+Get in range of a skeleton and it stops, gargles for most of a second with fire
+spilling out of its jaw, and then heaves a stream of lava globs at you.
+
+- **The arc is solved, not guessed.** A glob is a fireball with its thrust taken
+  away and gravity hung on it instead, so it loses 5% of its speed every tick
+  while falling — which the schoolbook ballistics formula gets badly wrong. The
+  mod walks candidate launch angles through the glob's *own* integration step
+  and narrows in on the one that passes closest to you, twice. From 3 to 16
+  blocks out it lands within a quarter of a block, including downhill off a
+  ledge.
+- **It won't telegraph a shot it can't make.** If nothing in its angle range
+  reaches you — you're too far, or too far above it — it doesn't gargle at all.
+- **The gargle is a real warning.** `GARGLE_TICKS` of standing still, dribbling
+  fire, before anything comes out, and the glob takes up to a second to arrive.
+  Both are dodgeable. Break line of sight mid-heave and the rest is called off.
+- **Leading.** Globs are aimed at where you'll be, measured from your position
+  between passes, because a player's server-side `motionX` is mostly zero.
+- **Splashes.** Where a glob lands, anything inside `SPLASH_RADIUS` catches
+  fire and a puddle of lava is left behind.
+- **Nothing it puts in your world is permanent.** Every block it places is
+  recorded with the state that was there before and put back `LAVA_TICKS` later,
+  on `/skeletons off`, on `/skeletons clear`, or if the mod gives up. Puddles go
+  down with the neighbour update suppressed, so the lava can't start flowing,
+  they only ever replace air over solid ground, and there's a hard cap on how
+  many can be live at once. `mobGriefing false` turns them off entirely.
+- **They're full of the stuff.** A skeleton doesn't cook in its own splash.
+  Daylight still gets them.
+- **Kill one and it spills**, which is a reason not to fight them indoors.
+
+Stray and wither skeletons are `AbstractSkeleton` subclasses, so they do it too.
+Bows are untouched — this is on top of the vanilla AI, not instead of it.
+
+Like smartzombies, it runs on the **integrated server**, so it works in
+singleplayer and for people on your LAN world, and does nothing on someone
+else's server.
+
+### In-game controls
+
+```
+/skeletons                status and counters
+/skeletons on | off       enable or disable it (off cleans up every puddle)
+/skeletons clear          put every puddle back right now
+/skeletons preset <name>  drizzle | normal | inferno
+/skeletons set KEY [value] read or write any config value, e.g. /skeletons set GLOBS 6
+/skeletons help
+```
+
+`RARITY` decides what fraction of skeletons are the lava-filled kind — it's
+hashed off the entity id, so a given skeleton is always the same answer rather
+than re-rolling four times a second. Set it below 1 and most skeletons stay
+ordinary.
+
+---
+
 ## Tests
 
 ```
@@ -136,11 +193,16 @@ node test/run.js
 ```
 
 `test/mock-modapi.js` is a small mock of the injector's ModAPI — proxied
-entities, a java-ish `List`, a fake world with a ground plane and a ceiling slab
-— which is enough to run both mods in Node. The suites check the real behaviour:
-that a web anchors and the pendulum stays taut and finite, that wall-crawl
-climbs, that the nearest zombie charges while the others take different flank
-slots, that a running target gets led, that a lost target gets searched for,
-that a stared-at zombie sidesteps, that a burning one heads for shade, and that
-`/zombies` parses. It is not a substitute for loading the mods in the real
-client, but it catches logic errors without a browser.
+entities, a java-ish `List`, a fake world with a ground plane, a ceiling slab and
+blocks you can change, and a projectile that integrates exactly the way
+`EntityFireball` does — which is enough to run all three mods in Node. The suites
+check the real behaviour: that a web anchors and the pendulum stays taut and
+finite, that wall-crawl climbs, that the nearest zombie charges while the others
+take different flank slots, that a running target gets led, that a lost target
+gets searched for, that a stared-at zombie sidesteps, that a burning one heads
+for shade, that a skeleton gargles before it fires and that its solved arc lands
+on the player from four blocks, from fifteen and from a ledge above, that a
+splash sets the player alight but not other skeletons, that puddles sit on solid
+ground and are all put back again, and that `/zombies` and `/skeletons` parse. It
+is not a substitute for loading the mods in the real client, but it catches logic
+errors without a browser.
