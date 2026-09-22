@@ -1,14 +1,15 @@
 # stuff
 
-Three EaglerForge mods for **EaglercraftX 1.12.2**:
+Four EaglerForge mods for **EaglercraftX 1.12.2**:
 
 | File | What it does |
 | --- | --- |
 | [`spidermod.js`](spidermod.js) | Pendulum web-swinging and wall-crawling. |
 | [`smartzombies.js`](smartzombies.js) | Zombie AI overhaul — flanking, horde comms, target leading, dodging. |
 | [`lavaskeletons.js`](lavaskeletons.js) | Skeletons gargle and vomit arcing globs of lava at you. |
+| [`acidrain.js`](acidrain.js) | Rain that burns you, eats your armour and dissolves the terrain. |
 
-All three are plain JavaScript mods for [EaglerForgeInjector](https://github.com/eaglerforge/EaglerForgeInjector).
+All four are plain JavaScript mods for [EaglerForgeInjector](https://github.com/eaglerforge/EaglerForgeInjector).
 Run an unminified, unobfuscated EaglercraftX 1.12.2 offline download through the
 injector, then load the `.js` files from the **Mods** button in Options.
 
@@ -186,6 +187,71 @@ ordinary.
 
 ---
 
+## acidrain
+
+It starts raining. You have about two seconds before it starts hurting.
+
+- **Standing in it costs you.** Anywhere the rain actually lands — open sky,
+  right biome, right altitude, which is vanilla's own test — you take damage
+  every second after `GRACE_TICKS`. Get under anything at all and it stops.
+- **It gets worse the longer you're out.** Damage ramps from `DAMAGE` up to
+  `RAMP_MAX` times that over `RAMP_TICKS` of unbroken exposure, so sprinting
+  between two doorways is survivable and crossing a field is not. Duck under
+  cover and the ramp drains at `DRY_RATE`, which is fast — shelter genuinely
+  resets the clock.
+- **Thunderstorms are worse again** (`THUNDER_MULTIPLIER`), and a thunderstorm
+  that grows out of a harmless drizzle turns it acid mid-storm.
+- **Armour buys you time and is eaten for it.** Each worn piece takes
+  `ARMOUR_REDUCTION` off the damage — a full set is 80% off by default — and
+  loses `ARMOUR_WEAR` durability per second you stand in the rain. Iron is
+  cheap; a full set is a consumable umbrella, and when it breaks you find out.
+  (The damage source bypasses vanilla armour, so this is the only armour
+  calculation, not one stacked on top of another.)
+- **Water shields you.** So does a hole, a tree, or a one-block overhang.
+- **Mobs are out in it too**, at `MOB_MULTIPLIER`. A storm thins out whatever
+  was wandering the surface, which is either a gift or a problem depending on
+  what you were farming. Creative and spectator players are left alone.
+- **It dissolves the terrain.** Blocks with sky above them wear down a step at
+  a time: grass and mycelium to dirt, stone to cobblestone to gravel to sand,
+  sandstone and clay to sand, and leaves, snow, ice, crops and flowers straight
+  to nothing. A block that's been eaten is left alone until it grows back, so
+  it erodes evenly rather than drilling one hole.
+- **Which means cover moves.** The canopy you're sheltering under is itself
+  being eaten, and when the leaves go, the rain finds you.
+- **Nothing it does to the world is permanent by default.** Every corroded
+  block is recorded with the state that was there before and put back
+  `HEAL_TICKS` later, on `/acidrain off`, on `/acidrain heal`, or if the mod
+  gives up. There's a hard cap on how many it remembers at once, oldest healed
+  first. `mobGriefing false` turns corrosion off entirely, and `PERMANENT true`
+  turns it one-way — then it isn't recorded and it never grows back.
+- **You get told.** An acid storm announces itself in chat, and a green
+  overlay warns you while you're standing in it.
+
+Like smartzombies and lavaskeletons, the damage and the corrosion run on the
+**integrated server**, so it works in singleplayer and for people on your LAN
+world, and does nothing on someone else's server. The screen warning is the
+only client-side piece.
+
+### In-game controls
+
+```
+/acidrain                       status and counters
+/acidrain on | off              enable or disable it (off heals every scar)
+/acidrain heal                  put every corroded block back right now
+/acidrain storm on|off|thunder  start or stop the weather
+/acidrain preset <name>         mist | normal | caustic
+/acidrain set KEY [value]       read or write any config value, e.g. /acidrain set DAMAGE 2
+/acidrain help
+```
+
+`/acid` is an alias. By default every rainstorm is acid; set `ALWAYS_ACID`
+false and `STORM_CHANCE` decides, rolled once when the storm rolls in and held
+for that storm. Note that the screen warning is computed client-side from "is
+it raining and can I see the sky", so it can't know which way that roll went —
+turn `STORM_CHANCE` down and it will cry wolf.
+
+---
+
 ## Tests
 
 ```
@@ -193,16 +259,22 @@ node test/run.js
 ```
 
 `test/mock-modapi.js` is a small mock of the injector's ModAPI — proxied
-entities, a java-ish `List`, a fake world with a ground plane, a ceiling slab and
-blocks you can change, and a projectile that integrates exactly the way
-`EntityFireball` does — which is enough to run all three mods in Node. The suites
-check the real behaviour: that a web anchors and the pendulum stays taut and
+entities, a java-ish `List`, a fake world with a ground plane, a ceiling slab,
+named blocks you can change, weather you can turn on, armour that wears out, and
+a projectile that integrates exactly the way `EntityFireball` does — which is
+enough to run all four mods in Node. The suites check the real behaviour: that a web anchors and the pendulum stays taut and
 finite, that wall-crawl climbs, that the nearest zombie charges while the others
 take different flank slots, that a running target gets led, that a lost target
 gets searched for, that a stared-at zombie sidesteps, that a burning one heads
 for shade, that a skeleton gargles before it fires and that its solved arc lands
 on the player from four blocks, from fifteen and from a ledge above, that a
 splash sets the player alight but not other skeletons, that puddles sit on solid
-ground and are all put back again, and that `/zombies` and `/skeletons` parse. It
+ground and are all put back again, that acid rain leaves you alone until the
+grace period is up and then bites harder the longer you stand in it, that a roof
+and a puddle of water both stop it, that a full set of armour takes most of it
+and is worn down for doing so, that it only eats blocks with sky above them and
+only one step down the chain at a time, that every scar grows back, that a storm
+rolled non-acid does nothing at all, and that `/zombies`, `/skeletons` and
+`/acidrain` parse. It
 is not a substitute for loading the mods in the real client, but it catches logic
 errors without a browser.

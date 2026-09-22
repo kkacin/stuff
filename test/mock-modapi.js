@@ -9,6 +9,7 @@ const serverCode = [];
 const calls = {
   tryMoveToXYZ: [], setAttackTarget: [], setLook: [], breakDoors: 0,
   spawned: [], impacts: [], setFire: [], fx: [], setBlock: [],
+  damage: [], armourWear: [], chat: [],
 };
 
 function fire(name, data) {
@@ -23,33 +24,69 @@ function solid(x, y, z) {
   return false;
 }
 
-const genericBlock = { __block: "generic", getRef() { return this; } };
-const lavaBlock = {
-  __block: "lava",
-  getDefaultState() { return lavaState; },
-  getRef() { return this; },
-};
-const lavaState = {
-  __state: "lava",
-  getMaterial: () => ({ isSolid: () => 0 }),
-  getBlock: () => lavaBlock,
-  getRef() { return this; },
-};
+// --- named blocks, so a mod can ask what a block actually is ---
+// Every block and every default state is a singleton, which is what lets
+// setBlockState() below tell "put the original back" apart from "change it".
+const NON_SOLID = new Set([
+  "air", "lava", "tallgrass", "deadbush", "yellow_flower", "red_flower",
+  "double_plant", "wheat", "carrots", "potatoes", "beetroots", "melon_stem",
+  "pumpkin_stem", "reeds", "vine", "waterlily", "snow_layer", "web",
+]);
 
-// blocks the mod has changed, keyed "x,y,z"; anything not in here is vanilla
+const blockDefs = {};
+const stateDefs = {};
+
+function blockFor(name) {
+  if (!blockDefs[name]) {
+    blockDefs[name] = {
+      __block: name,
+      getDefaultState: () => stateFor(name),
+      getRef() { return this; },
+    };
+  }
+  return blockDefs[name];
+}
+
+function stateFor(name) {
+  if (!stateDefs[name]) {
+    stateDefs[name] = {
+      __state: name,
+      getMaterial: () => ({ isSolid: () => (NON_SOLID.has(name) ? 0 : 1) }),
+      getBlock: () => blockFor(name),
+      getRef() { return this; },
+    };
+  }
+  return stateDefs[name];
+}
+
+const BLOCK_NAMES = [
+  "air", "lava", "grass", "dirt", "mycelium", "farmland", "grass_path",
+  "stone", "stonebrick", "mossy_cobblestone", "cobblestone", "gravel", "sand",
+  "sandstone", "red_sandstone", "clay", "snow", "snow_layer", "ice", "leaves",
+  "leaves2", "tallgrass", "deadbush", "yellow_flower", "red_flower",
+  "double_plant", "wheat", "carrots", "potatoes", "beetroots", "melon_stem",
+  "pumpkin_stem", "reeds", "vine", "waterlily", "cactus", "web",
+];
+const namedBlocks = {};
+BLOCK_NAMES.forEach((n) => { namedBlocks[n.toUpperCase()] = blockFor(n); });
+
+const lavaBlock = blockFor("lava");
+const lavaState = stateFor("lava");
+
+// vanilla terrain: stone under a layer of grass at y=63, plus the ceiling slab
+function kindAt(x, y, z) {
+  if (y === 80 && x > -40 && x < 40 && z > -40 && z < 40) return "stone";
+  if (y === 63) return "grass";
+  if (y < 63) return "stone";
+  return "air";
+}
+
+// blocks a mod has changed, keyed "x,y,z"; anything not in here is vanilla
 const blockOverrides = new Map();
 const bkey = (x, y, z) => x + "," + y + "," + z;
 
 function blockState(p) {
-  const over = blockOverrides.get(bkey(p.x, p.y, p.z));
-  if (over) return over;
-  const s = solid(p.x, p.y, p.z);
-  return {
-    __state: s ? "solid" : "air",
-    getMaterial: () => ({ isSolid: () => (s ? 1 : 0) }),
-    getBlock: () => genericBlock,
-    getRef() { return this; },
-  };
+  return blockOverrides.get(bkey(p.x, p.y, p.z)) || stateFor(kindAt(p.x, p.y, p.z));
 }
 
 const classes = {
@@ -60,9 +97,51 @@ const classes = {
     constructors: [(world, shooter, ax, ay, az) => makeFireball(world, shooter, ax, ay, az)],
   },
   "net.minecraft.util.text.TextComponentString": { constructors: [(s) => ({ __text: s })] },
+  "net.minecraft.util.DamageSource": {
+    staticVariables: { MAGIC: { __src: "magic", getRef() { return this; } } },
+    constructors: [(name) => ({ __src: name.__jstr, getRef() { return this; } })],
+  },
 };
 
+// A worn armour piece: the acid eats its durability, and a piece that runs
+// out of durability is gone, the way vanilla breaks one.
+function makeStack(name) {
+  return {
+    __stack: name, damage: 0, maxDamage: 100, stackSize: 1,
+    isEmpty() { return this.stackSize <= 0 ? 1 : 0; },
+    damageItem(n) {
+      this.damage += n;
+      calls.armourWear.push({ name: name, n: n, total: this.damage });
+      if (this.damage >= this.maxDamage) this.stackSize = 0;
+    },
+    getRef() { return this; },
+  };
+}
+
+const armourSlots = [];
+const armourInventory = {
+  size: () => armourSlots.length,
+  get: (i) => armourSlots[i],
+};
+
+function setArmour(pieces) {
+  armourSlots.length = 0;
+  for (let i = 0; i < pieces; i++) armourSlots.push(makeStack("plate" + i));
+  return armourSlots;
+}
+
 const player = {
+  health: 20,
+  inventory: { armorInventory: armourInventory },
+  attackEntityFrom(src, amount) {
+    calls.damage.push({ id: 1, amount: amount, src: src && src.__src });
+    this.health -= amount;
+    if (this.health <= 0) this.isDead = 1;
+    return 1;
+  },
+  setHealth(h) { this.health = h; },
+  isInWater() { return this.inWater ? 1 : 0; },
+  sendMessage(comp) { calls.chat.push((comp && comp.__text && comp.__text.__jstr) || String(comp)); },
   posX: 0, posY: 64, posZ: 0,
   motionX: 0, motionY: 0, motionZ: 0,
   prevPosX: 0, prevPosZ: 0,
@@ -74,7 +153,7 @@ const player = {
   isImmuneToFire: () => 0,
   setPosition(x, y, z) { this.posX = x; this.posY = y; this.posZ = z; },
   isSpectator: () => 0,
-  getHealth: () => 20,
+  getHealth() { return this.health; },
   getEntityId: () => 1,
   getCorrective() { return this; },
   getRef() { return this; },
@@ -117,9 +196,18 @@ function makeSkeleton(id, x, z, target, y) {
     motionX: 0, motionY: 0, motionZ: 0,
     rotationYaw: 0, onGround: 1, isDead: 0, hurtTime: 0, fire: 0,
     _target: target || null,
+    health: 20,
     getEntityId: () => id,
     getEyeHeight: () => 1.62,
-    getHealth: () => 20,
+    getHealth() { return this.health; },
+    setHealth(h) { this.health = h; },
+    attackEntityFrom(src, amount) {
+      calls.damage.push({ id: id, amount: amount, src: src && src.__src });
+      this.health -= amount;
+      if (this.health <= 0) this.isDead = 1;
+      return 1;
+    },
+    isInWater() { return this.inWater ? 1 : 0; },
     getAttackTarget() { return this._target; },
     setAttackTarget(t) { this._target = t; },
     getNavigator() { return { tryMoveToXYZ: () => 1, clearPath() {} }; },
@@ -211,15 +299,29 @@ const zombies = [
   makeZombie(13, 24, 8, null),     // no target -> should be recruited
 ];
 
+// --- weather, which the acid rain mod both reads and sets ---
+const weather = { raining: false, thundering: false };
+const worldInfo = {
+  isRaining: () => (weather.raining ? 1 : 0),
+  isThundering: () => (weather.thundering ? 1 : 0),
+  setRaining(v) { weather.raining = !!v; },
+  setThundering(v) { weather.thundering = !!v; },
+  setRainTime() {},
+  setThunderTime() {},
+  getRef() { return this; },
+};
+
 const world = {
   playerEntities: javaList([player]),
   loadedEntityList: javaList([player].concat(zombies)),
   getBlockState: (p) => blockState(p),
-  isAirBlock: (p) => (blockOverrides.has(bkey(p.x, p.y, p.z)) ? 0 : solid(p.x, p.y, p.z) ? 0 : 1),
+  isAirBlock: (p) => (blockState(p).__state === "air" ? 1 : 0),
   setBlockState(p, state, flags) {
     calls.setBlock.push({ x: p.x, y: p.y, z: p.z, state: state && state.__state, flags: flags });
-    if (state === lavaState) blockOverrides.set(bkey(p.x, p.y, p.z), state);
-    else blockOverrides.delete(bkey(p.x, p.y, p.z));
+    // Putting back exactly what vanilla generates there is not an override,
+    // so a mod that cleans up after itself leaves blockOverrides empty.
+    if (state === stateFor(kindAt(p.x, p.y, p.z))) blockOverrides.delete(bkey(p.x, p.y, p.z));
+    else blockOverrides.set(bkey(p.x, p.y, p.z), state);
     return 1;
   },
   playEvent(playerIn, id, p, data) { calls.fx.push({ id: id, x: p.x, y: p.y, z: p.z, data: data }); },
@@ -239,6 +341,11 @@ const world = {
   // under the slab you're shaded; step outside its footprint and you're in the sun
   canSeeSky: (p) => (p.y < 80 && p.x > -40 && p.x < 40 && p.z > -40 && p.z < 40 ? 0 : 1),
   isDaytime: () => 1,
+  isRaining: () => (weather.raining ? 1 : 0),
+  isThundering: () => (weather.thundering ? 1 : 0),
+  // vanilla's own test: rain only lands where the sky does
+  isRainingAt(p) { return weather.raining && this.canSeeSky(p) ? 1 : 0; },
+  getWorldInfo: () => worldInfo,
   getCorrective() { return this; },
   getRef() { return this; },
 };
@@ -253,7 +360,7 @@ const ModAPI = {
   removeEventListener() {},
   displayToChat(m) { chatLog.push(String((m && m.msg) || m)); },
   reflect: { getClassById: (id) => classes[id] },
-  blocks: { LAVA: lavaBlock },
+  blocks: namedBlocks,
   util: {
     str: (s) => ({ __jstr: s }),
     unstr: (s) => (s && s.__jstr) || "",
@@ -277,8 +384,13 @@ const domListeners = {};
 global.window = {
   addEventListener(t, f) { (domListeners[t] = domListeners[t] || []).push(f); },
 };
+const domElements = [];
 global.document = {
-  createElement: () => ({ style: {}, textContent: "", appendChild() {} }),
+  createElement() {
+    const el = { style: {}, textContent: "", appendChild() {} };
+    domElements.push(el);
+    return el;
+  },
   documentElement: { appendChild() {} },
 };
 global.ModAPI = global.PluginAPI = ModAPI;
@@ -292,4 +404,5 @@ function key(code, repeat) {
 module.exports = {
   ModAPI, fire, key, chatLog, serverCode, calls, player, zombies, world, events, javaList,
   makeZombie, makeSkeleton, stepProjectiles, projectiles, hitboxes, blockOverrides, lavaState,
+  weather, worldInfo, setArmour, armourSlots, stateFor, blockFor, kindAt, domElements,
 };
