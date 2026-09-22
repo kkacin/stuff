@@ -63,6 +63,7 @@
       CORRODE_RADIUS: 12,      // around each player
       CORRODE_TRIES: 8,        // candidate columns per player per pass
       CORRODE_CHANCE: 0.3,     // per candidate column
+      DROPS: false,            // dissolved blocks hand over what mining them would
       PERMANENT: false,        // true = it never grows back and isn't remembered
       HEAL_TICKS: 2400,        // ~2 minutes before a corroded block grows back
       MAX_SCARS: 256,          // hard cap on remembered blocks, oldest healed first
@@ -119,7 +120,7 @@
       }
     }
 
-    const stats = { storms: 0, acidStorms: 0, exposed: 0, bites: 0, damage: 0, armour: 0, corroded: 0, healed: 0 };
+    const stats = { storms: 0, acidStorms: 0, exposed: 0, bites: 0, damage: 0, armour: 0, corroded: 0, dropped: 0, healed: 0 };
 
     // ============================================================
     // SMALL HELPERS
@@ -339,6 +340,23 @@
       }
       if (!corrosion.size) softFail("Blocks.*", "no corrodible blocks found in this build");
       return corrosion;
+    }
+
+    // Hand over what mining the block would have given you. This is vanilla's
+    // own drop path, so it honours doTileDrops and the usual odds — leaves give
+    // saplings and the occasional apple rather than a guaranteed one.
+    function dropItems(world, blockObj, x, y, z, state) {
+      const p = blockPos(x, y, z);
+      if (!p || !blockObj) return false;
+      try {
+        if (typeof blockObj.dropBlockAsItem === "function") {
+          blockObj.dropBlockAsItem(raw(world), p, state, 0);
+          return true;
+        }
+      } catch (e) {
+        softFail("block.dropBlockAsItem", e);
+      }
+      return false;
     }
 
     function mobGriefing(world) {
@@ -686,7 +704,8 @@
 
         const state = blockStateAt(world, x, y, z);
         if (!state) continue;
-        const block = raw(call(state, "getBlock", null));
+        const blockObj = call(state, "getBlock", null);
+        const block = blockObj ? raw(blockObj) : null;
         const into = block ? table.get(block) : null;
         if (!into) continue;
 
@@ -694,11 +713,20 @@
         if (scarKeys.has(key)) continue;   // already eaten once; let it heal first
 
         const prev = raw(state);
+        // Only blocks the acid dissolves completely drop anything. The ones
+        // that merely wear down a step already gave you the block they would
+        // have dropped — stone drops cobblestone, and stone *becomes*
+        // cobblestone — so dropping as well would just mint it.
+        const dropped = CONFIG.DROPS && into.gone && dropItems(world, blockObj, x, y, z, prev);
         if (!setBlock(world, x, y, z, into.state)) continue;
         stats.corroded++;
+        if (dropped) stats.dropped++;
         playFx(world, FX_SPLASH, x, y + 1, z, FX_GREEN);
 
-        if (CONFIG.PERMANENT) continue;    // one-way: not remembered, never healed
+        // A block whose contents we handed over doesn't grow back: putting the
+        // leaves back after giving you the sapling would be free saplings every
+        // storm. Taking the drop is what makes that one corrosion one-way.
+        if (CONFIG.PERMANENT || dropped) continue;
         scarKeys.add(key);
         scars.push({
           world: world,
@@ -906,7 +934,8 @@
           " | storms " + stats.storms + " (" + stats.acidStorms + " acid)",
         "out in it " + stats.exposed + " | bites " + stats.bites +
           " | damage " + stats.damage.toFixed(1) + " | armour eaten " + stats.armour,
-        "corroded " + stats.corroded + " | scars " + scars.length + " live / " + stats.healed + " healed",
+        "corroded " + stats.corroded + " | dropped " + stats.dropped +
+          " | scars " + scars.length + " live / " + stats.healed + " healed",
       ];
     }
 
