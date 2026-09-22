@@ -218,8 +218,17 @@ It starts raining. You have about two seconds before it starts hurting.
   it erodes evenly rather than drilling one hole.
 - **Which means cover moves.** The canopy you're sheltering under is itself
   being eaten, and when the leaves go, the rain finds you.
-- **Nothing it does to the world is permanent by default.** Every corroded
-  block is recorded with the state that was there before and put back
+- **It doesn't drop what it eats**, unless you ask. `DROPS` (off by default)
+  makes a block the acid dissolves *completely* — leaves, snow, ice, crops,
+  flowers, vines — hand over what mining it would have, through vanilla's own
+  drop path, so `doTileDrops` and the usual sapling and apple odds still apply.
+  A block that only wears down a step never drops: stone drops cobblestone and
+  stone *becomes* cobblestone, so dropping as well would just mint it. Taking
+  the drop makes that one corrosion one-way — putting the leaves back after
+  handing you the sapling would be free saplings every storm. Armour the acid
+  wears through just breaks, the way vanilla breaks it.
+- **Nothing else it does to the world is permanent by default.** Every
+  corroded block is recorded with the state that was there before and put back
   `HEAL_TICKS` later, on `/acidrain off`, on `/acidrain heal`, or if the mod
   gives up. There's a hard cap on how many it remembers at once, oldest healed
   first. `mobGriefing false` turns corrosion off entirely, and `PERMANENT true`
@@ -273,8 +282,10 @@ ground and are all put back again, that acid rain leaves you alone until the
 grace period is up and then bites harder the longer you stand in it, that a roof
 and a puddle of water both stop it, that a full set of armour takes most of it
 and is worn down for doing so, that it only eats blocks with sky above them and
-only one step down the chain at a time, that every scar grows back, that a storm
-rolled non-acid does nothing at all, and that `/zombies`, `/skeletons` and
-`/acidrain` parse. It
+only one step down the chain at a time, that every scar grows back, that
+`DROPS` hands over a dissolved block and then leaves that one hole alone while
+a block that merely wore down a step mints nothing, that a storm rolled
+non-acid does nothing at all, and that `/zombies`, `/skeletons` and `/acidrain`
+parse. It
 is not a substitute for loading the mods in the real client, but it catches logic
 errors without a browser.

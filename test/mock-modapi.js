@@ -9,7 +9,7 @@ const serverCode = [];
 const calls = {
   tryMoveToXYZ: [], setAttackTarget: [], setLook: [], breakDoors: 0,
   spawned: [], impacts: [], setFire: [], fx: [], setBlock: [],
-  damage: [], armourWear: [], chat: [],
+  damage: [], armourWear: [], chat: [], drops: [],
 };
 
 function fire(name, data) {
@@ -41,6 +41,9 @@ function blockFor(name) {
     blockDefs[name] = {
       __block: name,
       getDefaultState: () => stateFor(name),
+      dropBlockAsItem(w, p, state, fortune) {
+        calls.drops.push({ block: name, x: p.x, y: p.y, z: p.z, was: state && state.__state, fortune: fortune });
+      },
       getRef() { return this; },
     };
   }

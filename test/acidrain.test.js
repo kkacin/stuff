@@ -266,6 +266,74 @@ check("but there is nothing to heal", h.blockOverrides.size === permanent, h.blo
 cmd("/acidrain set PERMANENT false");
 h.blockOverrides.clear();
 
+// --- DROPS: what the acid dissolves completely, it can hand over ---
+harmless();
+cmd("/acidrain heal");
+h.blockOverrides.clear();
+
+// a canopy of leaves over the ground around the player
+function layLeaves() {
+  for (let x = OPEN.x - 14; x <= OPEN.x + 14; x++) {
+    for (let z = -14; z <= 14; z++) h.blockOverrides.set(x + ",64," + z, h.stateFor("leaves"));
+  }
+}
+const canopy = (b) => b.state === "air" && b.y === 64;
+const leafAt = (b) => h.blockOverrides.get(b.x + ",64," + b.z);
+
+layLeaves();
+h.calls.drops.length = 0;
+h.calls.setBlock.length = 0;
+step(100);
+const stripped = h.calls.setBlock.filter(canopy);
+check("the acid strips a canopy", stripped.length > 0, stripped.length);
+check("but drops nothing by default", h.calls.drops.length === 0, h.calls.drops);
+cmd("/acidrain heal");
+check("and the canopy grows back",
+  stripped.every((b) => leafAt(b) && leafAt(b).__state === "leaves"),
+  stripped.filter((b) => !leafAt(b)).map((b) => b.x + "," + b.z));
+
+// --- with the flag on, it hands the block over ---
+cmd("/acidrain set DROPS true");
+h.calls.drops.length = 0;
+h.calls.setBlock.length = 0;
+step(100);
+const taken = h.calls.setBlock.filter(canopy);
+check("DROPS hands over what mining it would have",
+  taken.length > 0 && h.calls.drops.length === taken.length,
+  { stripped: taken.length, dropped: h.calls.drops.length });
+check("through vanilla's own drop path, with the state the block had",
+  h.calls.drops.every((d) => d.block === "leaves" && d.was === "leaves" && d.fortune === 0),
+  h.calls.drops.slice(0, 3));
+check("and it drops where the block was",
+  h.calls.drops.every((d) => taken.some((b) => b.x === d.x && b.y === d.y && b.z === d.z)),
+  h.calls.drops.slice(0, 3));
+
+// --- which is exactly why that block doesn't come back ---
+cmd("/acidrain set CORRODE false");
+cmd("/acidrain heal");
+step(400);
+check("a block that dropped never grows back, so the drop can't be duplicated",
+  taken.every((b) => !leafAt(b)), taken.filter(leafAt).map((b) => b.x + "," + b.z));
+
+// --- a block that only wears down a step still drops nothing ---
+cmd("/acidrain set CORRODE true");
+h.blockOverrides.clear();
+for (let x = OPEN.x - 14; x <= OPEN.x + 14; x++) {
+  for (let z = -14; z <= 14; z++) h.blockOverrides.set(x + ",63," + z, h.stateFor("cobblestone"));
+}
+h.calls.drops.length = 0;
+step(100);
+check("wearing stone down a step mints nothing",
+  h.calls.drops.length === 0 &&
+    [...h.blockOverrides.values()].some((st) => st.__state === "gravel"),
+  h.calls.drops);
+r = cmd("/acidrain");
+check("status counts what it handed over", /dropped [1-9]/.test(r[3]), r[3]);
+
+cmd("/acidrain set DROPS false");
+cmd("/acidrain heal");
+h.blockOverrides.clear();
+
 // --- a storm that isn't acid is just weather ---
 cmd("/acidrain set DAMAGE 2");
 cmd("/acidrain set CORRODE true");
