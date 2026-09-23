@@ -2,13 +2,13 @@
 
 Five EaglerForge mods for **EaglercraftX 1.12.2**:
 
-| File | What it does |
-| --- | --- |
-| [`spidermod.js`](spidermod.js) | Pendulum web-swinging and wall-crawling. |
-| [`smartzombies.js`](smartzombies.js) | Zombie AI overhaul — flanking, horde comms, target leading, dodging. |
-| [`lavaskeletons.js`](lavaskeletons.js) | Skeletons gargle and vomit arcing globs of lava at you. |
-| [`acidrain.js`](acidrain.js) | Rain that burns you, eats your armour and dissolves the terrain. |
-| [`tucson.js`](tucson.js) | Saguaro cactus everywhere — young, bare, one-armed, two-armed, candelabras and old giants. |
+| Mod | What it does | More info |
+| --- | --- | --- |
+| [`spidermod.js`](spidermod.js) | Pendulum web-swinging and wall-crawling. | [Description & controls ↓](#spidermod) |
+| [`smartzombies.js`](smartzombies.js) | Zombie AI overhaul — flanking, horde comms, target leading, dodging. | [Description & controls ↓](#smartzombies) |
+| [`lavaskeletons.js`](lavaskeletons.js) | Skeletons gargle and vomit arcing globs of lava at you. | [Description & controls ↓](#lavaskeletons) |
+| [`acidrain.js`](acidrain.js) | Rain that burns you, eats your armour and dissolves the terrain. | [Description & controls ↓](#acidrain) |
+| [`tucson.js`](tucson.js) | Saguaro cactus everywhere — young, bare, one-armed, two-armed, candelabras and old giants. | [Description & controls ↓](#tucson) |
 
 All five are plain JavaScript mods for [EaglerForgeInjector](https://github.com/eaglerforge/EaglerForgeInjector).
 Run an unminified, unobfuscated EaglercraftX 1.12.2 offline download through the
@@ -20,6 +20,8 @@ runtime — but 1.12.2 is what it's written and tuned for.
 ---
 
 ## spidermod
+
+### Controls
 
 | Key | Action |
 | --- | --- |
@@ -71,6 +73,8 @@ things that the injector's ModAPI just provides:
   probing four neighbour blocks, so slabs, stairs and fences work.
 - Firing a web from a standing start now hops you off the ground, and a short
   grace window keeps the ground check from cutting the web on the same tick.
+
+<sub>[↑ Back to the mod list](#stuff)</sub>
 
 ---
 
@@ -130,6 +134,8 @@ The AI thinks every `THINK_INTERVAL` ticks, only about zombies within
 If it throws ten times it disables itself and logs why, rather than lagging your
 world forever.
 
+<sub>[↑ Back to the mod list](#stuff)</sub>
+
 ---
 
 ## lavaskeletons
@@ -185,6 +191,8 @@ else's server.
 hashed off the entity id, so a given skeleton is always the same answer rather
 than re-rolling four times a second. Set it below 1 and most skeletons stay
 ordinary.
+
+<sub>[↑ Back to the mod list](#stuff)</sub>
 
 ---
 
@@ -260,6 +268,10 @@ for that storm. Note that the screen warning is computed client-side from "is
 it raining and can I see the sky", so it can't know which way that roll went —
 turn `STORM_CHANCE` down and it will cry wolf.
 
+<sub>[↑ Back to the mod list](#stuff)</sub>
+
+---
+
 ## tucson
 
 The world grows saguaros. Walk into a desert and it's full of them; walk
@@ -330,6 +342,8 @@ else's server.
 mean it. Presets and density changes apply to chunks you haven't visited yet.
 The shape mix is tunable too — `W_YOUNG`, `W_SPEAR`, `W_ARM`, `W_TWIN`,
 `W_CANDELABRA` and `W_GIANT` are relative weights.
+
+<sub>[↑ Back to the mod list](#stuff)</sub>
 
 ---
 
