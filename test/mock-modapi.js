@@ -30,8 +30,9 @@ function solid(x, y, z) {
 const NON_SOLID = new Set([
   "air", "lava", "tallgrass", "deadbush", "yellow_flower", "red_flower",
   "double_plant", "wheat", "carrots", "potatoes", "beetroots", "melon_stem",
-  "pumpkin_stem", "reeds", "vine", "waterlily", "snow_layer", "web",
+  "pumpkin_stem", "reeds", "vine", "waterlily", "snow_layer", "web", "water",
 ]);
+const LIQUID = new Set(["water", "lava"]);
 
 const blockDefs = {};
 const stateDefs = {};
@@ -54,7 +55,10 @@ function stateFor(name) {
   if (!stateDefs[name]) {
     stateDefs[name] = {
       __state: name,
-      getMaterial: () => ({ isSolid: () => (NON_SOLID.has(name) ? 0 : 1) }),
+      getMaterial: () => ({
+        isSolid: () => (NON_SOLID.has(name) ? 0 : 1),
+        isLiquid: () => (LIQUID.has(name) ? 1 : 0),
+      }),
       getBlock: () => blockFor(name),
       getRef() { return this; },
     };
@@ -69,6 +73,7 @@ const BLOCK_NAMES = [
   "leaves2", "tallgrass", "deadbush", "yellow_flower", "red_flower",
   "double_plant", "wheat", "carrots", "potatoes", "beetroots", "melon_stem",
   "pumpkin_stem", "reeds", "vine", "waterlily", "cactus", "web",
+  "water", "hardened_clay", "stained_hardened_clay",
 ];
 const namedBlocks = {};
 BLOCK_NAMES.forEach((n) => { namedBlocks[n.toUpperCase()] = blockFor(n); });
@@ -76,9 +81,17 @@ BLOCK_NAMES.forEach((n) => { namedBlocks[n.toUpperCase()] = blockFor(n); });
 const lavaBlock = blockFor("lava");
 const lavaState = stateFor("lava");
 
-// vanilla terrain: stone under a layer of grass at y=63, plus the ceiling slab
+// vanilla terrain: stone under a layer of grass at y=63, plus the ceiling slab.
+// Far out east (x >= 1000) it's a desert — sand over sandstone — with a pond at
+// x,z in [1200, 1210). Far out west (x <= -1000) is frozen.
+const DESERT_X = 1000;
 function kindAt(x, y, z) {
   if (y === 80 && x > -40 && x < 40 && z > -40 && z < 40) return "stone";
+  if (x >= DESERT_X) {
+    if (y === 63 && x >= 1200 && x < 1210 && z >= 1200 && z < 1210) return "water";
+    if (y === 63) return "sand";
+    if (y === 62) return "sandstone";
+  }
   if (y === 63) return "grass";
   if (y < 63) return "stone";
   return "air";
@@ -329,6 +342,22 @@ const world = {
   },
   playEvent(playerIn, id, p, data) { calls.fx.push({ id: id, x: p.x, y: p.y, z: p.z, data: data }); },
   getGameRules: () => ({ getBoolean: () => 1 }),
+  // the first air block above the top solid-or-liquid one, as vanilla's
+  // precipitation height map has it
+  getPrecipitationHeight(p) {
+    for (let y = 255; y > 0; y--) {
+      const st = blockState({ x: p.x, y: y, z: p.z });
+      if (st.getMaterial().isSolid() || st.getMaterial().isLiquid()) return { x: p.x, y: y + 1, z: p.z };
+    }
+    return { x: p.x, y: 0, z: p.z };
+  },
+  isBlockLoaded: () => 1,
+  getChunkFromChunkCoords: () => ({ isPopulated: () => 1 }),
+  getBiome(p) {
+    const name = p.x >= DESERT_X ? "Desert" : p.x <= -DESERT_X ? "Ice Plains" : "Plains";
+    return { getBiomeName: () => ({ __jstr: name }) };
+  },
+  getSeed: () => 1234567,
   spawnEntity(e) {
     // snapshot the launch, since the entity itself keeps moving afterwards
     calls.spawned.push({
@@ -353,8 +382,23 @@ const world = {
   getRef() { return this; },
 };
 
+// The injector routes every Java method through ModAPI.hooks.methods, keyed by
+// the name getMethodFromPackage hands back. This is vanilla 1.12's
+// BlockCactus.canBlockStay, so a patch can be tested against the real rule.
+const hookMethods = {
+  "net.minecraft.block.BlockCactus.canBlockStay": function ($this, w, p) {
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const m = w.getBlockState({ x: p.x + dx, y: p.y, z: p.z + dz }).getMaterial();
+      if (m.isSolid() || w.getBlockState({ x: p.x + dx, y: p.y, z: p.z + dz }).__state === "lava") return 0;
+    }
+    const below = w.getBlockState({ x: p.x, y: p.y - 1, z: p.z }).__state;
+    return below === "cactus" || below === "sand" ? 1 : 0;
+  },
+};
+
 const ModAPI = {
   version: "mock-1.0",
+  hooks: { methods: hookMethods },
   is_1_12: true,
   isServer: false,
   meta: { title() {}, version() {}, description() {}, credits() {}, icon() {}, config() {} },
@@ -373,6 +417,7 @@ const ModAPI = {
       return Object.keys(obj).filter((k) => k.startsWith(prop)).sort((a, b) => a.length - b.length)[0] || prop;
     },
     wrap: (o) => o,
+    getMethodFromPackage: (cls, method) => cls + "." + method,
   },
   dedicatedServer: { appendCode(fn) { serverCode.push(fn); } },
   settings: { keyBindJump: { pressed: 0 }, keyBindSneak: { pressed: 0 }, keyBindForward: { pressed: 0 } },
@@ -408,4 +453,5 @@ module.exports = {
   ModAPI, fire, key, chatLog, serverCode, calls, player, zombies, world, events, javaList,
   makeZombie, makeSkeleton, stepProjectiles, projectiles, hitboxes, blockOverrides, lavaState,
   weather, worldInfo, setArmour, armourSlots, stateFor, blockFor, kindAt, domElements,
+  hookMethods, blockState, DESERT_X,
 };

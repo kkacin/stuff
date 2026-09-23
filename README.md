@@ -1,6 +1,6 @@
 # stuff
 
-Four EaglerForge mods for **EaglercraftX 1.12.2**:
+Five EaglerForge mods for **EaglercraftX 1.12.2**:
 
 | File | What it does |
 | --- | --- |
@@ -8,8 +8,9 @@ Four EaglerForge mods for **EaglercraftX 1.12.2**:
 | [`smartzombies.js`](smartzombies.js) | Zombie AI overhaul — flanking, horde comms, target leading, dodging. |
 | [`lavaskeletons.js`](lavaskeletons.js) | Skeletons gargle and vomit arcing globs of lava at you. |
 | [`acidrain.js`](acidrain.js) | Rain that burns you, eats your armour and dissolves the terrain. |
+| [`tucson.js`](tucson.js) | Saguaro cactus everywhere — young, bare, one-armed, two-armed, candelabras and old giants. |
 
-All four are plain JavaScript mods for [EaglerForgeInjector](https://github.com/eaglerforge/EaglerForgeInjector).
+All five are plain JavaScript mods for [EaglerForgeInjector](https://github.com/eaglerforge/EaglerForgeInjector).
 Run an unminified, unobfuscated EaglercraftX 1.12.2 offline download through the
 injector, then load the `.js` files from the **Mods** button in Options.
 
@@ -259,6 +260,77 @@ for that storm. Note that the screen warning is computed client-side from "is
 it raining and can I see the sky", so it can't know which way that roll went —
 turn `STORM_CHANCE` down and it will cry wolf.
 
+## tucson
+
+The world grows saguaros. Walk into a desert and it's full of them; walk
+anywhere else that isn't frozen and you'll still come across the odd one,
+standing on its own little patch of sand.
+
+They come in six shapes, each in a range of heights, with the arms at
+different heights and pointing different ways, so no two look alike:
+
+| Shape | Height | Arms |
+| --- | --- | --- |
+| `young` | 2–3 | none yet |
+| `spear` | 5–9 | none — straight up |
+| `arm` | 6–10 | one |
+| `twin` | 7–11 | two, often held out opposite like the postcard |
+| `candelabra` | 9–13 | three or four |
+| `giant` | 12–16 | three or four, some kinked out-up-out like an old saguaro |
+
+Every arm leaves the trunk two blocks before it turns up, so there's a gap and
+it reads as an arm rather than a fat trunk, and arm tips always stay below the
+top of the trunk.
+
+- **They grow in as you explore.** Every chunk within `RADIUS` chunks of a
+  player is visited once, after vanilla has finished decorating it, and
+  planted from the world seed — the same seed grows the same saguaros. Deserts,
+  mesas and savannas get `DENSITY_DESERT` per chunk, snowy and icy biomes get
+  none, and everywhere else gets `DENSITY_ELSEWHERE`. It works on existing
+  worlds too: chunks you haven't been to since installing it get planted the
+  next time you're there.
+- **They don't get planted twice.** A visited chunk is marked with a single
+  sandstone block down at `MARKER_Y` (y=1, in the bedrock layer) in its corner,
+  so a restart doesn't re-plant it — and a saguaro you cut down stays cut down.
+- **They only go where they fit**: on sand, grass, dirt or terracotta, with
+  room for every block and nothing solid touching any side, not under trees,
+  not in or right next to water. Off the sand, the spot under the trunk (and
+  the grass and dirt right around it) is turned to sand, because cactus roots
+  in sand.
+- **They're real cactus.** They hurt to walk into and drop cactus when broken.
+  Vanilla cactus breaks the moment anything solid touches its side — *another
+  cactus included* — so on its own an arm would fall off the first time a
+  block next to it changed. The mod patches `BlockCactus.canBlockStay` so a
+  cactus may also have cactus beside it, as long as the plant it's joined to
+  still stands on sand somewhere. Cut a saguaro off at the base and the whole
+  thing comes down, arms and all; put stone against one and it still pops off
+  like vanilla. It also means you can build your own saguaros by hand. The
+  patch runs on both the client and the integrated server so they agree about
+  which blocks stay up. (If a build can't patch methods, `/tucson` says so and
+  the arms are fragile — they'll hold until something next to them changes.)
+
+Planting runs on the **integrated server**, so like the other server-side mods
+it works in singleplayer and on your LAN world, and does nothing on someone
+else's server.
+
+### In-game controls
+
+```
+/tucson                   status and how many of each shape have grown
+/tucson on | off          start or stop planting new chunks (existing saguaros stay)
+/tucson plant [shape]     grow one five blocks in front of you, e.g. /tucson plant giant
+/tucson shapes            list the shapes
+/tucson clear [radius]    remove saguaros planted this session near you (default 64)
+/tucson preset <name>     tucson | desert | sparse | forest
+/tucson set KEY [value]   read or write any config value, e.g. /tucson set DENSITY_ELSEWHERE 0
+/tucson help
+```
+
+`desert` keeps them to desert biomes only; `forest` is for when you really
+mean it. Presets and density changes apply to chunks you haven't visited yet.
+The shape mix is tunable too — `W_YOUNG`, `W_SPEAR`, `W_ARM`, `W_TWIN`,
+`W_CANDELABRA` and `W_GIANT` are relative weights.
+
 ---
 
 ## Tests
@@ -271,7 +343,7 @@ node test/run.js
 entities, a java-ish `List`, a fake world with a ground plane, a ceiling slab,
 named blocks you can change, weather you can turn on, armour that wears out, and
 a projectile that integrates exactly the way `EntityFireball` does — which is
-enough to run all four mods in Node. The suites check the real behaviour: that a web anchors and the pendulum stays taut and
+enough to run all five mods in Node. The suites check the real behaviour: that a web anchors and the pendulum stays taut and
 finite, that wall-crawl climbs, that the nearest zombie charges while the others
 take different flank slots, that a running target gets led, that a lost target
 gets searched for, that a stared-at zombie sidesteps, that a burning one heads
@@ -285,7 +357,12 @@ and is worn down for doing so, that it only eats blocks with sky above them and
 only one step down the chain at a time, that every scar grows back, that
 `DROPS` hands over a dissolved block and then leaves that one hole alone while
 a block that merely wore down a step mints nothing, that a storm rolled
-non-acid does nothing at all, and that `/zombies`, `/skeletons` and `/acidrain`
-parse. It
+non-acid does nothing at all, that every saguaro shape is well-formed — trunk
+unbroken, arms that leave a gap and never outgrow it, nothing floating — that a
+desert fills with every shape and the plains get far fewer, that nothing grows
+in a pond or a frozen biome, that a marked chunk is never planted twice, that
+vanilla's rule would knock the arms off and the patched one keeps them while a
+cut saguaro still comes down, and that `/zombies`, `/skeletons`, `/acidrain`
+and `/tucson` parse. It
 is not a substitute for loading the mods in the real client, but it catches logic
 errors without a browser.
